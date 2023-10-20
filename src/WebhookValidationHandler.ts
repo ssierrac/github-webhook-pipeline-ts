@@ -19,12 +19,27 @@ class ValidateWebhookFuntion implements LambdaInterface {
         logger.info('Lambda invocation event', { event });
         logger.info(`Secret name ${WEBHOOK_SECRET_NAME}`);
 
-        return {
-            statusCode: 200,
-            body: JSON.stringify({
-                message: 'Webhook validation successful',
-            }),
-        };
+        try {
+            if (event.body === null) {
+                throw new Error('Body is null');
+            }
+            const body = JSON.parse(event.body);
+            logger.info('Body', body);
+
+            return {
+                statusCode: 200,
+                body: JSON.stringify({
+                    message: 'Webhook validation successful',
+                }),
+            };
+        } catch (err) {
+            return {
+                statusCode: 400,
+                body: JSON.stringify({
+                    message: 'Webhook validation failed',
+                }),
+            };
+        }
     }
 }
 
