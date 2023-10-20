@@ -1,0 +1,31 @@
+openapi: "3.0.1"
+info:
+  title: "Free Lunch Kitchen API"
+  version: "1.0.0"
+  description: Free Lunch Kitchen Service API
+paths:
+  /push:
+    post:
+      tags:
+        - push
+      summary: Handle new push event
+      description: Handle new push event
+      responses:
+        "200":
+          description: "Successful operation"
+      x-amazon-apigateway-request-validator: "Validate body"
+      x-amazon-apigateway-integration:
+        credentials:
+          Fn::GetAtt: [GithubWebhooksApiIntegrationRole, Arn]
+        type: "aws_proxy"
+        httpMethod: "POST"
+        uri:
+          "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GithubWebhooksValidationFunction.Arn}/invocations"
+        responses:
+          default:
+            statusCode: "200"
+        passthroughBehavior: "never" 
+components:
+    Empty:
+      title: "Empty Schema"
+      type: "object"

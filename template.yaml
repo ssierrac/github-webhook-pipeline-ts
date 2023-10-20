@@ -1,72 +1,215 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
+Transform: 
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
 Description: >
   github-webhook-pipeline-ts
 
-  Sample SAM Template for github-webhook-pipeline-ts
+  Serverless Architecture for handle github repository webhooks.
 
-# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - ES4000 # Rule disabled because the CatchAll Rule doesn't need a DLQ
+        - ES6000 # Rule disabled because SQS DLOs don't need a RedrivePolicy
+        - WS2001 # Rule disabled because check does not support !ToJsonString transform
+        - ES1001 # Rule disabled because our Lambda functions don't need DestinationConfig.OnFailure
+        - W3002
+
+Parameters:
+  Stage:
+    Type: String
+    Default: local
+    AllowedValues:
+      - local
+      - dev
+      - prod
+  projectName:
+    Type: String
+    Default: "githubWebhook"
+  SecretName:
+    Description: Secret Name
+    Type: String
+    Default: WebhookSecret
+    AllowedPattern: ^[a-zA-Z0-9_.-/]*$
+
+Mappings:
+  LogsRetentionPeriodMap:
+    local:
+      Days: 3
+    dev:
+      Days: 15
+    prod:
+      Days: 30
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+
 Globals:
-  Function:
-    Timeout: 3
-    MemorySize: 128
-
-    Tracing: Active
   Api:
     TracingEnabled: true
+    OpenApiVersion: 3.0.1
+  Function:
+    Runtime: nodejs18.x
+    MemorySize: 128
+    Timeout: 30
+    Tracing: Active
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        POWERTOOLS_LOGGER_CASE: PascalCase
+        POWERTOOLS_TRACE_DISABLED: "false" # Explicitly disables tracing, default
+        POWERTOOLS_LOGGER_LOG_EVENT: !If [IsProd, "false", "true"] # Logs incoming event, default
+        POWERTOOLS_LOGGER_SAMPLE_RATE: !If [IsProd, "0.1", "0"] # Debug log sampling percentage, default
+        POWERTOOLS_LOG_LEVEL: INFO # Log level for Logger (INFO, DEBUG, etc.), default
+        LOG_LEVEL: INFO # Log level for Logger
+        SERVICE_NAMESPACE: !Sub "${projectName}.githubWebhook"
+        POWERTOOLS_SERVICE_NAME: !Sub "${projectName}.githubWebhook"
+        POWERTOOLS_METRICS_NAMESPACE: !Sub "${projectName}.githubWebhook"
+    Tags:
+      stage: !Ref Stage
+      project: !Ref projectName
+      namespace: !Sub "${projectName}.githubWebhook"
+
 Resources:
-  HelloWorldFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+  GithubWebhooksNamespaceParam:
+    Type: AWS::SSM::Parameter
     Properties:
-      CodeUri: hello-world/
-      Handler: app.lambdaHandler
-      Runtime: nodejs18.x
-      Architectures:
-      - x86_64
-      Tracing: Active
+      Type: String
+      Name: !Sub "/githubWebhook-prop/${Stage}/${projectName}Namespace"
+      Value: !Sub "${projectName}.githubWebhook"
+
+  GithubWebhookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Secret for github repo webhooks
+      Name: !Ref SecretName
+      GenerateSecretString:
+        PasswordLength: 30
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: stage
+          Value: !Ref Stage
+        - Key: project
+          Value: !Ref projectName
+
+
+  GithubWebhooksValidationFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - GithubWebhooksNamespaceParam
+    Properties:
+      Handler: WebhookValidationHandler.lambdaHandler
       Environment:
         Variables:
-          POWERTOOLS_SERVICE_NAME: helloWorld
-          POWERTOOLS_METRICS_NAMESPACE: github-webhook-pipeline-ts
-          LOG_LEVEL: INFO
-      Events:
-        HelloWorld:
-          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
-          Properties:
-            Path: /hello
-            Method: get
-    Metadata: # Manage esbuild properties
+          WEBHOOK_SECRET_NAME: !Ref SecretName
+    Metadata:
       BuildMethod: esbuild
       BuildProperties:
         Minify: true
         Target: es2020
-        # Sourcemap: true # Enabling source maps will create the required NODE_OPTIONS environment variables on your lambda function during sam build
         EntryPoints:
-        - app.ts
+          - src/WebhookValidationHandler.ts
 
-  ApplicationResourceGroup:
-    Type: AWS::ResourceGroups::Group
+  GithubWebhooksValidationFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
-      Name:
-        Fn::Sub: ApplicationInsights-SAM-${AWS::StackName}
-      ResourceQuery:
-        Type: CLOUDFORMATION_STACK_1_0
-  ApplicationInsightsMonitoring:
-    Type: AWS::ApplicationInsights::Application
+      LogGroupName: !Sub "/aws/lambda/${GithubWebhooksValidationFunction}"
+      RetentionInDays: !FindInMap [LogsRetentionPeriodMap, !Ref Stage, Days]
+
+  GithubWebhooksApi:
+    Type: AWS::Serverless::Api
     Properties:
-      ResourceGroupName:
-        Ref: ApplicationResourceGroup
-      AutoConfigurationEnabled: 'true'
+      StageName: !Ref Stage
+      EndpointConfiguration:
+        Type: REGIONAL
+      MethodSettings:
+        - MetricsEnabled: true
+          ResourcePath: /*
+          HttpMethod: "*"
+          LoggingLevel: !If [IsProd, ERROR, INFO]
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 100
+      AccessLogSetting:
+        DestinationArn: !GetAtt GithubWebhooksApiLogGroup.Arn
+        Format: !ToJsonString
+          requestId: $context.requestId
+          integration-error: $context.integration.error
+          integration-status: $context.integration.status
+          integration-latency: $context.integration.latency
+          integration-requestId: $context.integration.requestId
+          integration-integrationStatus: $context.integration.integrationStatus
+          response-latency: $context.responseLatency
+          status: $context.status
+      DefinitionBody: !Transform
+        Name: "AWS::Include"
+        Parameters:
+          Location: "api.yaml"
+      Tags:
+        stage: !Ref Stage
+        project: !Ref projectName
+  
+  GithubWebhooksApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Properties:
+         RetentionInDays: !FindInMap [LogsRetentionPeriodMap, !Ref Stage, Days]
+
+  GithubWebhooksApiIntegrationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          Effect: Allow
+          Action: sts:AssumeRole
+          Principal:
+            Service: apigateway.amazonaws.com
+      Policies:
+        - PolicyName: AllowLambdaInvocation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: 
+                  - !GetAtt GithubWebhooksValidationFunction.Arn
+  
+
 Outputs:
-  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
-  # Find out more about other implicit resources you can reference within SAM
-  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
-  HelloWorldApi:
-    Description: API Gateway endpoint URL for Prod stage for Hello World function
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/hello/"
-  HelloWorldFunction:
-    Description: Hello World Lambda Function ARN
-    Value: !GetAtt HelloWorldFunction.Arn
-  HelloWorldFunctionIamRole:
-    Description: Implicit IAM Role created for Hello World function
-    Value: !GetAtt HelloWorldFunctionRole.Arn
+  # SSM Parameter
+  GithubWebhooksNamespace:
+    Description: Github Webhooks namespace parameter
+    Value: !Ref GithubWebhooksNamespaceParam
+  GithubWebhooksNamespaceValue:
+    Description: Github Webhooks namespace parameter value
+    Value: !GetAtt GithubWebhooksNamespaceParam.Value
+
+  # Lambda Functions
+  GithubWebhooksValidationFunctionName:
+    Description: GithubWebhooksValidation function name
+    Value: !Ref GithubWebhooksValidationFunction
+  GithubWebhooksValidationFunctionArn:
+    Description: GithubWebhooksValidation function Arn
+    Value: !GetAtt GithubWebhooksValidationFunction.Arn
+
+  # Secrets
+  GithubWebhookSecret:
+    Description: GithubWebhook Secret Arn
+    Value: !Ref GithubWebhookSecret
+  GithubWebhookSecretCommand:
+    Description: Command to get GithubWebhook Secret
+    Value: !Sub "aws ssm get-parameter --name /aws/reference/secretsmanager/${SecretName} --with-decryption"
+  
+  # API Gateway
+  BaseUrl:
+    Description: Github Webhook API endpoint
+    Value: !Sub "https://${GithubWebhooksApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  ApiUrl:
+    Description: Github Webhook API endpoint
+    Value: !Sub "https://${GithubWebhooksApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}/"
