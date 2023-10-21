@@ -7,7 +7,7 @@ import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-sec
 import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
 
 const WEBHOOK_SECRET_NAME = process.env.WEBHOOK_SECRET_NAME;
-const SNS_TOPIC = process.env.SNS_TOPIC_ARN;
+const SNS_TOPIC = process.env.SNS_TOPIC;
 const sm_client = new SecretsManagerClient();
 const sns_client = new SNSClient();
 class ValidateWebhookFuntion implements LambdaInterface {
