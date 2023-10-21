@@ -31,7 +31,10 @@ class ValidateWebhookFuntion implements LambdaInterface {
                 throw new Error('Body is null');
             }
             const body = JSON.parse(event.body);
-            logger.info(body);
+            logger.info(`Signature verification successful for ${body.repository.full_name} repo`);
+            logger.info(`Payload received`, body);
+            // TODO: Add logic to send the payload to a SNS topic
+
             return {
                 statusCode: 200,
                 body: JSON.stringify({
@@ -71,7 +74,7 @@ class ValidateWebhookFuntion implements LambdaInterface {
     }
 
     private verifySignature(event: APIGatewayProxyEvent, secret: string) {
-        const signature = crypto.createHmac('sha256', secret).update(JSON.stringify(event.body)).digest('hex');
+        const signature = crypto.createHmac('sha256', secret).update(event.body!).digest('hex');
         const trusted = Buffer.from(`sha256=${signature}`, 'ascii');
         const untrusted = Buffer.from(event.headers['X-Hub-Signature-256']!, 'ascii');
         return crypto.timingSafeEqual(trusted, untrusted);
