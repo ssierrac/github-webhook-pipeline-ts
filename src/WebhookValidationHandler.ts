@@ -87,8 +87,9 @@ class ValidateWebhookFuntion implements LambdaInterface {
     private async publishPayload(payload: any) {
         try {
             const message = {
-                default: `Push event received for ${payload.repository.full_name} repo`,
-                lambda: payload,
+                email: `Push event received for ${payload.repository.full_name} repo`,
+                'email-json': `Push event received for ${payload.repository.full_name} repo`,
+                default: payload,
             };
 
             const command = new PublishCommand({
