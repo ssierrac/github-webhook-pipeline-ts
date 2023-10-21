@@ -4,9 +4,12 @@ import { logger, metrics, tracer } from './powertools';
 import { LambdaInterface } from '@aws-lambda-powertools/commons';
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
 
 const WEBHOOK_SECRET_NAME = process.env.WEBHOOK_SECRET_NAME;
-const client = new SecretsManagerClient();
+const SNS_TOPIC = process.env.SNS_TOPIC_ARN;
+const sm_client = new SecretsManagerClient();
+const sns_client = new SNSClient();
 class ValidateWebhookFuntion implements LambdaInterface {
     /**
      * Handle the github webhook validation.
@@ -33,12 +36,13 @@ class ValidateWebhookFuntion implements LambdaInterface {
             const body = JSON.parse(event.body);
             logger.info(`Signature verification successful for ${body.repository.full_name} repo`);
             logger.info(`Payload received`, body);
-            // TODO: Add logic to send the payload to a SNS topic
 
+            const response = await this.publishPayload(body);
             return {
                 statusCode: 200,
                 body: JSON.stringify({
                     message: 'Webhook validation successful',
+                    messageId: response.MessageId,
                 }),
             };
         } catch (err) {
@@ -65,7 +69,7 @@ class ValidateWebhookFuntion implements LambdaInterface {
     private async getSecret(secretName: string) {
         try {
             const command = new GetSecretValueCommand({ SecretId: secretName });
-            const response = await client.send(command);
+            const response = await sm_client.send(command);
             return response.SecretString;
         } catch (err) {
             logger.error(`Error getting secret ${secretName} from Secrets Manager`);
@@ -78,6 +82,21 @@ class ValidateWebhookFuntion implements LambdaInterface {
         const trusted = Buffer.from(`sha256=${signature}`, 'ascii');
         const untrusted = Buffer.from(event.headers['X-Hub-Signature-256']!, 'ascii');
         return crypto.timingSafeEqual(trusted, untrusted);
+    }
+
+    private async publishPayload(payload: any) {
+        try {
+            const command = new PublishCommand({
+                Message: JSON.stringify(payload),
+                TopicArn: SNS_TOPIC!,
+            });
+            const response = await sns_client.send(command);
+            logger.info(`Payload published to SNS topic ${SNS_TOPIC}`);
+            return response;
+        } catch (err) {
+            logger.error(`Error publishing payload to SNS topic ${SNS_TOPIC}`);
+            throw err;
+        }
     }
 }
 

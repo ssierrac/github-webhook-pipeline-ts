@@ -97,6 +97,15 @@ Resources:
         - Key: project
           Value: !Ref projectName
 
+  GithubWebhookSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Tags:
+        - Key: stage
+          Value: !Ref Stage
+        - Key: project
+          Value: !Ref projectName
+
 
   GithubWebhooksValidationFunction:
     Type: AWS::Serverless::Function
@@ -107,9 +116,12 @@ Resources:
       Environment:
         Variables:
           WEBHOOK_SECRET_NAME: !Ref SecretName
+          SNS_TOPIC: !Ref GithubWebhookSNSTopic
       Policies:
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref GithubWebhookSecret
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt GithubWebhookSNSTopic.TopicName
     Metadata:
       BuildMethod: esbuild
       BuildProperties:
@@ -218,3 +230,12 @@ Outputs:
   ApiUrl:
     Description: Github Webhook API endpoint
     Value: !Sub "https://${GithubWebhooksApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}/"
+  
+  #SNS TOPIC
+  GithubWebhookSNSTopicName:
+    Description: GithubWebhook SNS Topic name
+    Value: !GetAtt GithubWebhookSNSTopic.TopicName
+
+  GithubWebhookSNSTopicArn:
+    Description: GithubWebhook SNS Topic Arn
+    Value: !Ref GithubWebhookSNSTopic
