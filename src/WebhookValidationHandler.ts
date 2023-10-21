@@ -87,8 +87,12 @@ class ValidateWebhookFuntion implements LambdaInterface {
     private async publishPayload(payload: any) {
         try {
             const command = new PublishCommand({
-                Message: payload,
-                TopicArn: SNS_TOPIC!,
+                Message: {
+                    default: `Push event received for ${payload.repository.full_name} repo`,
+                    lambda: payload,
+                },
+                MessageStructure: 'json',
+                TopicArn: SNS_TOPIC,
             });
             const response = await sns_client.send(command);
             logger.info(`Payload published to SNS topic ${SNS_TOPIC}`);
